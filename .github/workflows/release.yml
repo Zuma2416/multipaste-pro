@@ -1,0 +1,89 @@
+name: MultiPaste Pro リリース
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'リリースするバージョン (例: 0.2.0)'
+        required: true
+      release_notes:
+        description: 'リリースノート'
+        required: false
+        default: 'バグ修正・改善'
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Update version in package.json
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Update version in tauri.conf.json
+        working-directory: src-tauri
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('tauri.conf.json', 'utf8'));
+            conf.version = '$VERSION';
+            fs.writeFileSync('tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+          "
+
+      - name: Update version in Cargo.toml
+        working-directory: src-tauri
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+
+      - name: Build and release (macOS aarch64)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: v${{ github.event.inputs.version }}
+          releaseName: "MultiPaste Pro v${{ github.event.inputs.version }}"
+          releaseBody: ${{ github.event.inputs.release_notes }}
+          releaseDraft: false
+          prerelease: false
+          args: --target aarch64-apple-darwin
+          updaterJsonKeepUniversal: true
+
+      - name: Commit updated manifests
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: MultiPaste Pro v${{ github.event.inputs.version }} リリースマニフェスト更新"
+          file_pattern: "src-tauri/tauri.conf.json package.json src-tauri/Cargo.toml"
+          branch: main

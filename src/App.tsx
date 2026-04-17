@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
 import type { ActionResult, AppOverview, PasteSlot } from "./types";
 import { formatSource } from "./types";
@@ -12,6 +15,15 @@ type ToastState = {
   ok: boolean;
 };
 
+type UpdateStatus =
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "available"; version: string }
+  | { phase: "downloading" }
+  | { phase: "ready" }
+  | { phase: "up-to-date" }
+  | { phase: "error"; message: string };
+
 const SLOT_CAPACITY = 10;
 
 function App() {
@@ -21,6 +33,8 @@ function App() {
   const [notificationGranted, setNotificationGranted] = useState<boolean | null>(null);
   const [toast, setToast] = useState<ToastState>({ visible: false, message: "", ok: true });
   const toastTimerRef = useRef<number | null>(null);
+  const [appVersion, setAppVersion] = useState("");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: "idle" });
 
   const showToast = useCallback((message: string, ok: boolean) => {
     setToast({ visible: true, message, ok });
@@ -63,9 +77,19 @@ function App() {
       } catch {
         // 通知パーミッション確認に失敗しても無視する
       }
+
+      // アプリバージョン取得
+      try {
+        const ver = await getVersion();
+        if (!isMounted) return;
+        setAppVersion(ver);
+      } catch {
+        // バージョン取得に失敗しても無視する
+      }
     };
 
     let unlisten: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
 
     void init();
     void listen<ActionResult>("multipaste://slots-updated", async (event) => {
@@ -76,10 +100,19 @@ function App() {
       unlisten = cleanup;
     });
 
+    // トレイメニューからの更新確認トリガー
+    void listen("check-update", () => {
+      if (!isMounted) return;
+      void checkForUpdate();
+    }).then((cleanup) => {
+      unlistenUpdate = cleanup;
+    });
+
     return () => {
       isMounted = false;
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       if (unlisten) unlisten();
+      if (unlistenUpdate) unlistenUpdate();
     };
   }, [showToast]);
 
@@ -108,6 +141,46 @@ function App() {
       const message = error instanceof Error ? error.message : "操作の実行に失敗しました。";
       setErrorMessage(message);
       showToast(message, false);
+    }
+  };
+
+  const checkForUpdate = async () => {
+    setUpdateStatus({ phase: "checking" });
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus({ phase: "available", version: update.version });
+      } else {
+        setUpdateStatus({ phase: "up-to-date" });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "更新の確認に失敗しました。";
+      setUpdateStatus({ phase: "error", message });
+    }
+  };
+
+  const downloadAndInstallUpdate = async () => {
+    setUpdateStatus({ phase: "downloading" });
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus({ phase: "up-to-date" });
+        return;
+      }
+      await update.downloadAndInstall();
+      setUpdateStatus({ phase: "ready" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "更新のダウンロードに失敗しました。";
+      setUpdateStatus({ phase: "error", message });
+    }
+  };
+
+  const handleRelaunch = async () => {
+    try {
+      await relaunch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "再起動に失敗しました。";
+      setUpdateStatus({ phase: "error", message });
     }
   };
 
@@ -268,6 +341,55 @@ function App() {
           </button>
         </div>
       </footer>
+
+      {/* Update bar */}
+      <div className="update-bar">
+        <span className="update-version">v{appVersion || "..."}</span>
+        {updateStatus.phase === "idle" && (
+          <button
+            type="button"
+            className="ghost-btn update-check-btn"
+            onClick={() => void checkForUpdate()}
+          >
+            アップデートを確認
+          </button>
+        )}
+        {updateStatus.phase === "checking" && (
+          <span className="update-status-text">確認中...</span>
+        )}
+        {updateStatus.phase === "available" && (
+          <div className="update-available">
+            <span className="update-status-text">
+              v{updateStatus.version} が利用可能です
+            </span>
+            <button
+              type="button"
+              className="ghost-btn update-action-btn"
+              onClick={() => void downloadAndInstallUpdate()}
+            >
+              更新する
+            </button>
+          </div>
+        )}
+        {updateStatus.phase === "downloading" && (
+          <span className="update-status-text">ダウンロード中...</span>
+        )}
+        {updateStatus.phase === "ready" && (
+          <button
+            type="button"
+            className="ghost-btn update-action-btn"
+            onClick={() => void handleRelaunch()}
+          >
+            再起動して更新を適用
+          </button>
+        )}
+        {updateStatus.phase === "up-to-date" && (
+          <span className="update-status-text is-ok">最新バージョンです</span>
+        )}
+        {updateStatus.phase === "error" && (
+          <span className="update-status-text is-err">{updateStatus.message}</span>
+        )}
+      </div>
     </div>
   );
 }

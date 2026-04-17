@@ -33,6 +33,7 @@ const MENU_SHOW_APP: &str = "show-app";
 const MENU_CAPTURE: &str = "capture-now";
 const MENU_PASTE: &str = "paste-now";
 const MENU_TOGGLE_MODE: &str = "toggle-mode";
+const MENU_CHECK_UPDATE: &str = "check-update";
 const MENU_QUIT: &str = "quit";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -774,6 +775,9 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
         None::<&str>,
     )
     .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
+    let check_update_item = MenuItemBuilder::with_id(MENU_CHECK_UPDATE, "アップデート確認...")
+        .build(app)
+        .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
     let quit_item = MenuItemBuilder::with_id(MENU_QUIT, "終了")
         .build(app)
         .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
@@ -785,6 +789,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
         .item(&paste_item)
         .item(&toggle_item)
         .separator()
+        .item(&check_update_item)
         .item(&quit_item)
         .build()
         .map_err(|error| format!("トレイメニューの構築に失敗しました: {error}"))?;
@@ -840,6 +845,13 @@ fn handle_tray_menu_event(app: &AppHandle, menu_id: &str) {
                 .map(|store| store.paste_mode.toggle())
                 .unwrap_or(PasteMode::Consume);
             let _ = set_paste_mode(app.clone(), state, mode.as_str().to_string());
+        }
+        MENU_CHECK_UPDATE => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+                let _ = window.emit("check-update", ());
+            }
         }
         MENU_QUIT => {
             app.exit(0);
@@ -1254,6 +1266,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
