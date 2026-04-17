@@ -60,21 +60,63 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 
-      - name: Build and release (macOS aarch64)
-        uses: tauri-apps/tauri-action@v0
+      - name: Build (macOS aarch64)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: "-"
-        with:
-          tagName: v${{ github.event.inputs.version }}
-          releaseName: "MultiPaste Pro v${{ github.event.inputs.version }}"
-          releaseBody: ${{ github.event.inputs.release_notes }}
-          releaseDraft: false
-          prerelease: false
-          args: --target aarch64-apple-darwin
-          updaterJsonKeepUniversal: true
+        run: npx tauri build --target aarch64-apple-darwin
+
+      - name: Prepare release assets
+        id: assets
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+
+          # Find built artifacts
+          APP_TAR=$(find "$BUNDLE_DIR" -name "*.app.tar.gz" | head -1)
+          APP_SIG=$(find "$BUNDLE_DIR" -name "*.app.tar.gz.sig" | head -1)
+          DMG=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)
+
+          echo "app_tar=$APP_TAR" >> "$GITHUB_OUTPUT"
+          echo "app_sig=$APP_SIG" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+
+          # Read signature for latest.json
+          SIGNATURE=$(cat "$APP_SIG")
+          APP_FILENAME=$(basename "$APP_TAR")
+
+          # Generate latest.json
+          node -e "
+            const fs = require('fs');
+            const json = {
+              version: '$VERSION',
+              notes: '${{ github.event.inputs.release_notes }}',
+              pub_date: new Date().toISOString(),
+              platforms: {
+                'darwin-aarch64': {
+                  signature: '$SIGNATURE',
+                  url: 'https://github.com/Zuma2416/multipaste-pro/releases/download/v$VERSION/$APP_FILENAME'
+                }
+              }
+            };
+            fs.writeFileSync('latest.json', JSON.stringify(json, null, 2) + '\n');
+          "
+
+          echo "Generated latest.json:"
+          cat latest.json
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          gh release create "v$VERSION" \
+            --title "MultiPaste Pro v$VERSION" \
+            --notes "${{ github.event.inputs.release_notes }}" \
+            "${{ steps.assets.outputs.app_tar }}" \
+            "${{ steps.assets.outputs.app_sig }}" \
+            "${{ steps.assets.outputs.dmg }}" \
+            "latest.json"
 
       - name: Commit updated manifests
         uses: stefanzweifel/git-auto-commit-action@v5
