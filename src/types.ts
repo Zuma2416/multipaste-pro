@@ -33,6 +33,16 @@ export interface ActionResult {
   slotCount: number;
 }
 
+export interface Preferences {
+  shortcutCopy: string;
+  shortcutPaste: string;
+  shortcutRangeStart: string;
+  shortcutRangeEnd: string;
+  slotCapacity: number;
+  defaultPasteMode: string;
+  soundEnabled: boolean;
+}
+
 export function formatSource(source: PasteSlotSource): string {
   switch (source) {
     case "manual-copy": return "手動";

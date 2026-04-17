@@ -19,17 +19,19 @@ use serde::{Deserialize, Serialize};
 use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
 use tauri::menu::{CheckMenuItem, MenuBuilder, MenuEvent, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, Shortcut};
+use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, GlobalShortcutExt, Shortcut};
 
-const COPY_SHORTCUT: &str = "CommandOrControl+Alt+C";
-const PASTE_SHORTCUT: &str = "CommandOrControl+Alt+V";
-const RANGE_START_SHORTCUT: &str = "CommandOrControl+Alt+BracketLeft";
-const RANGE_END_SHORTCUT: &str = "CommandOrControl+Alt+BracketRight";
 const APP_EVENT: &str = "multipaste://slots-updated";
 const PICKER_EVENT: &str = "multipaste://picker-show";
 const STORAGE_FILE: &str = "slots.json";
-const SLOT_CAPACITY: usize = 10;
+const PREFERENCES_FILE: &str = "preferences.json";
+const DEFAULT_SLOT_CAPACITY: usize = 10;
+const DEFAULT_COPY_SHORTCUT: &str = "CommandOrControl+Alt+C";
+const DEFAULT_PASTE_SHORTCUT: &str = "CommandOrControl+Alt+V";
+const DEFAULT_RANGE_START_SHORTCUT: &str = "CommandOrControl+Alt+BracketLeft";
+const DEFAULT_RANGE_END_SHORTCUT: &str = "CommandOrControl+Alt+BracketRight";
 const MENU_SHOW_APP: &str = "show-app";
+const MENU_PREFERENCES: &str = "preferences";
 const MENU_CAPTURE: &str = "capture-now";
 const MENU_PASTE: &str = "paste-now";
 const MENU_TOGGLE_MODE: &str = "toggle-mode";
@@ -55,6 +57,32 @@ impl PasteMode {
         match self {
             Self::Consume => Self::Keep,
             Self::Keep => Self::Consume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Preferences {
+    shortcut_copy: String,
+    shortcut_paste: String,
+    shortcut_range_start: String,
+    shortcut_range_end: String,
+    slot_capacity: usize,
+    default_paste_mode: String,
+    sound_enabled: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            shortcut_copy: DEFAULT_COPY_SHORTCUT.to_string(),
+            shortcut_paste: DEFAULT_PASTE_SHORTCUT.to_string(),
+            shortcut_range_start: DEFAULT_RANGE_START_SHORTCUT.to_string(),
+            shortcut_range_end: DEFAULT_RANGE_END_SHORTCUT.to_string(),
+            slot_capacity: DEFAULT_SLOT_CAPACITY,
+            default_paste_mode: "consume".to_string(),
+            sound_enabled: true,
         }
     }
 }
@@ -134,7 +162,9 @@ struct ParsedShortcuts {
 
 struct AppState {
     inner: Mutex<SlotStore>,
-    shortcuts: ParsedShortcuts,
+    shortcuts: Mutex<ParsedShortcuts>,
+    preferences: Mutex<Preferences>,
+    preferences_path: PathBuf,
 }
 
 #[tauri::command]
@@ -143,10 +173,14 @@ fn get_app_overview(state: tauri::State<'_, AppState>) -> Result<AppOverview, St
         .inner
         .lock()
         .map_err(|_| "状態ロックの取得に失敗しました。".to_string())?;
+    let prefs = state
+        .preferences
+        .lock()
+        .map_err(|_| "設定の読み込みに失敗しました。".to_string())?;
 
     Ok(AppOverview {
         runtime_mode: "メニューバー常駐 + 設定ウィンドウ",
-        slot_capacity: SLOT_CAPACITY,
+        slot_capacity: prefs.slot_capacity,
         retention_strategy: "FIFO ローテーション",
         copy_hotkey: "Cmd + Option + C",
         paste_hotkey: "Cmd + Option + V",
@@ -315,6 +349,140 @@ fn set_paste_mode(app: AppHandle, state: tauri::State<'_, AppState>, mode: Strin
     Ok(result)
 }
 
+#[tauri::command]
+fn get_preferences(state: tauri::State<'_, AppState>) -> Result<Preferences, String> {
+    let prefs = state
+        .preferences
+        .lock()
+        .map_err(|_| "設定の読み込みに失敗しました。".to_string())?;
+    Ok(prefs.clone())
+}
+
+#[tauri::command]
+fn update_preference(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<Preferences, String> {
+    let mut prefs = state
+        .preferences
+        .lock()
+        .map_err(|_| "設定の更新に失敗しました。".to_string())?;
+
+    match key.as_str() {
+        "shortcutCopy" => {
+            // ショートカット文字列のパース検証
+            value.parse::<Shortcut>().map_err(|e| format!("ショートカットが無効です: {e}"))?;
+            let old = prefs.shortcut_copy.clone();
+            prefs.shortcut_copy = value.clone();
+            persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
+            reregister_shortcut(&app, &state, &old, &value)?;
+        }
+        "shortcutPaste" => {
+            value.parse::<Shortcut>().map_err(|e| format!("ショートカットが無効です: {e}"))?;
+            let old = prefs.shortcut_paste.clone();
+            prefs.shortcut_paste = value.clone();
+            persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
+            reregister_shortcut(&app, &state, &old, &value)?;
+        }
+        "shortcutRangeStart" => {
+            value.parse::<Shortcut>().map_err(|e| format!("ショートカットが無効です: {e}"))?;
+            let old = prefs.shortcut_range_start.clone();
+            prefs.shortcut_range_start = value.clone();
+            persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
+            reregister_shortcut(&app, &state, &old, &value)?;
+        }
+        "shortcutRangeEnd" => {
+            value.parse::<Shortcut>().map_err(|e| format!("ショートカットが無効です: {e}"))?;
+            let old = prefs.shortcut_range_end.clone();
+            prefs.shortcut_range_end = value.clone();
+            persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
+            reregister_shortcut(&app, &state, &old, &value)?;
+        }
+        "slotCapacity" => {
+            let cap: usize = value.parse().map_err(|_| "スロット上限は数値で指定してください。".to_string())?;
+            if !(1..=30).contains(&cap) {
+                return Err("スロット上限は 1〜30 の範囲で指定してください。".to_string());
+            }
+            prefs.slot_capacity = cap;
+            persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
+            // スロット上限を超過する場合は末尾から削除
+            let mut store = state
+                .inner
+                .lock()
+                .map_err(|_| "スロット状態の更新に失敗しました。".to_string())?;
+            while store.slots.len() > cap {
+                store.slots.pop_back();
+            }
+            persist_slots(&store)?;
+        }
+        "defaultPasteMode" => {
+            if value != "consume" && value != "keep" {
+                return Err("ペーストモードは consume か keep で指定してください。".to_string());
+            }
+            prefs.default_paste_mode = value;
+            persist_preferences(&prefs, &state.preferences_path)?;
+        }
+        "soundEnabled" => {
+            let enabled: bool = value.parse().map_err(|_| "効果音設定は true/false で指定してください。".to_string())?;
+            prefs.sound_enabled = enabled;
+            persist_preferences(&prefs, &state.preferences_path)?;
+        }
+        _ => {
+            return Err(format!("不明な設定キーです: {key}"));
+        }
+    }
+
+    let prefs = state
+        .preferences
+        .lock()
+        .map_err(|_| "設定の読み込みに失敗しました。".to_string())?;
+    Ok(prefs.clone())
+}
+
+fn reregister_shortcut(
+    app: &AppHandle,
+    state: &tauri::State<'_, AppState>,
+    old_str: &str,
+    new_str: &str,
+) -> Result<(), String> {
+    let old_sc: Shortcut = old_str.parse().map_err(|e| format!("旧ショートカットのパースに失敗: {e}"))?;
+    let new_sc: Shortcut = new_str.parse().map_err(|e| format!("新ショートカットのパースに失敗: {e}"))?;
+
+    let gsm = app.global_shortcut();
+    gsm.unregister(old_sc)
+        .map_err(|e| format!("ショートカットの解除に失敗しました: {e}"))?;
+    gsm.on_shortcut(new_sc, |app, shortcut, event| {
+        use tauri_plugin_global_shortcut::ShortcutState;
+        if event.state == ShortcutState::Released {
+            handle_shortcut(app, shortcut);
+        }
+    })
+    .map_err(|e| format!("ショートカットの再登録に失敗しました: {e}"))?;
+
+    // ParsedShortcuts を更新
+    let prefs = state
+        .preferences
+        .lock()
+        .map_err(|_| "設定の読み込みに失敗しました。".to_string())?;
+    let mut sc = state
+        .shortcuts
+        .lock()
+        .map_err(|_| "ショートカット状態の更新に失敗しました。".to_string())?;
+    sc.copy = prefs.shortcut_copy.parse().unwrap_or(sc.copy);
+    sc.paste = prefs.shortcut_paste.parse().unwrap_or(sc.paste);
+    sc.range_start = prefs.shortcut_range_start.parse().unwrap_or(sc.range_start);
+    sc.range_end = prefs.shortcut_range_end.parse().unwrap_or(sc.range_end);
+
+    Ok(())
+}
+
 /// 各行末の空白・タブを除去し、先頭・末尾の空行を取り除く。
 /// 改行・行内スペースはそのまま保持する。
 fn normalize_whitespace(text: &str) -> String {
@@ -341,6 +509,12 @@ fn capture_clipboard_into_store(
         return Err("選択中のテキストを取得できませんでした。".to_string());
     }
 
+    let slot_capacity = state
+        .preferences
+        .lock()
+        .map(|p| p.slot_capacity)
+        .unwrap_or(DEFAULT_SLOT_CAPACITY);
+
     let mut store = state
         .inner
         .lock()
@@ -355,7 +529,7 @@ fn capture_clipboard_into_store(
     };
 
     store.slots.push_front(slot);
-    while store.slots.len() > SLOT_CAPACITY {
+    while store.slots.len() > slot_capacity {
         store.slots.pop_back();
     }
     store.last_action = format!("選択テキストをスロットへ保存しました。件数: {}", store.slots.len());
@@ -497,7 +671,14 @@ fn send_cmd_c() -> Result<(), String> {
     send_cmd_key('c')
 }
 
-fn play_sound(name: &'static str) {
+fn play_sound(app: &AppHandle, name: &'static str) {
+    let sound_enabled = app
+        .try_state::<AppState>()
+        .and_then(|state| state.preferences.lock().ok().map(|p| p.sound_enabled))
+        .unwrap_or(true);
+    if !sound_enabled {
+        return;
+    }
     let _ = Command::new("afplay")
         .arg(format!("/System/Library/Sounds/{name}.aiff"))
         .spawn();
@@ -587,9 +768,9 @@ fn show_hud(app: &AppHandle) {
 fn emit_slots_updated(app: &AppHandle, result: &ActionResult) {
     let _ = app.emit(APP_EVENT, result);
     if result.ok {
-        play_sound("Tink");
+        play_sound(app, "Tink");
     } else {
-        play_sound("Basso");
+        play_sound(app, "Basso");
     }
     show_hud(app);
 }
@@ -675,6 +856,33 @@ fn resolve_storage_path(app: &AppHandle) -> PathBuf {
         .join(STORAGE_FILE)
 }
 
+fn resolve_preferences_path(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("multipaste-pro")
+        .join(PREFERENCES_FILE)
+}
+
+fn load_preferences(path: &Path) -> Preferences {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Preferences::default();
+    };
+    serde_json::from_str::<Preferences>(&raw).unwrap_or_default()
+}
+
+fn persist_preferences(prefs: &Preferences, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("設定フォルダの作成に失敗しました: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(prefs)
+        .map_err(|e| format!("設定の JSON 変換に失敗しました: {e}"))?;
+    fs::write(path, json)
+        .map_err(|e| format!("設定の保存に失敗しました: {e}"))?;
+    Ok(())
+}
+
 // ── ウィンドウ状態の手動保存/復元 ──────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -734,28 +942,42 @@ fn restore_main_window_state(app: &AppHandle) {
 
 fn initialize_state(app: &AppHandle) -> AppState {
     let storage_path = resolve_storage_path(app);
+    let preferences_path = resolve_preferences_path(app);
     let slots = load_slots(&storage_path);
+    let prefs = load_preferences(&preferences_path);
+
+    let initial_paste_mode = match prefs.default_paste_mode.as_str() {
+        "keep" => PasteMode::Keep,
+        _ => PasteMode::Consume,
+    };
+
+    let shortcuts = ParsedShortcuts {
+        copy: prefs.shortcut_copy.parse().unwrap_or_else(|_| DEFAULT_COPY_SHORTCUT.parse().unwrap()),
+        paste: prefs.shortcut_paste.parse().unwrap_or_else(|_| DEFAULT_PASTE_SHORTCUT.parse().unwrap()),
+        range_start: prefs.shortcut_range_start.parse().unwrap_or_else(|_| DEFAULT_RANGE_START_SHORTCUT.parse().unwrap()),
+        range_end: prefs.shortcut_range_end.parse().unwrap_or_else(|_| DEFAULT_RANGE_END_SHORTCUT.parse().unwrap()),
+    };
 
     AppState {
         inner: Mutex::new(SlotStore {
             slots,
             last_action: "待機中".to_string(),
             storage_path,
-            paste_mode: PasteMode::Consume,
+            paste_mode: initial_paste_mode,
             pre_picker_app: None,
             range_select_start: None,
         }),
-        shortcuts: ParsedShortcuts {
-            copy: COPY_SHORTCUT.parse().expect("COPY_SHORTCUT のパースに失敗しました"),
-            paste: PASTE_SHORTCUT.parse().expect("PASTE_SHORTCUT のパースに失敗しました"),
-            range_start: RANGE_START_SHORTCUT.parse().expect("RANGE_START_SHORTCUT のパースに失敗しました"),
-            range_end: RANGE_END_SHORTCUT.parse().expect("RANGE_END_SHORTCUT のパースに失敗しました"),
-        },
+        shortcuts: Mutex::new(shortcuts),
+        preferences: Mutex::new(prefs),
+        preferences_path,
     }
 }
 
 fn create_tray(app: &AppHandle) -> Result<(), String> {
     let show_item = MenuItemBuilder::with_id(MENU_SHOW_APP, "ダッシュボードを開く")
+        .build(app)
+        .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
+    let preferences_item = MenuItemBuilder::with_id(MENU_PREFERENCES, "設定...")
         .build(app)
         .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
     let capture_item = MenuItemBuilder::with_id(MENU_CAPTURE, "クリップボードを保存")
@@ -784,6 +1006,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
 
     let menu = MenuBuilder::new(app)
         .item(&show_item)
+        .item(&preferences_item)
         .separator()
         .item(&capture_item)
         .item(&paste_item)
@@ -829,6 +1052,9 @@ fn handle_tray_menu_event(app: &AppHandle, menu_id: &str) {
         MENU_SHOW_APP => {
             let _ = show_main_window(app);
         }
+        MENU_PREFERENCES => {
+            show_preferences_window(app);
+        }
         MENU_CAPTURE => {
             let state = app.state::<AppState>();
             let _ = capture_clipboard_into_store(app, &state);
@@ -857,6 +1083,13 @@ fn handle_tray_menu_event(app: &AppHandle, menu_id: &str) {
             app.exit(0);
         }
         _ => {}
+    }
+}
+
+fn show_preferences_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("preferences") {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
@@ -982,6 +1215,12 @@ fn simulate_drag_and_capture(
     }
 
     let state = app.state::<AppState>();
+    let slot_capacity = state
+        .preferences
+        .lock()
+        .map(|p| p.slot_capacity)
+        .unwrap_or(DEFAULT_SLOT_CAPACITY);
+
     let mut store = state
         .inner
         .lock()
@@ -996,7 +1235,7 @@ fn simulate_drag_and_capture(
     };
 
     store.slots.push_front(slot);
-    while store.slots.len() > SLOT_CAPACITY {
+    while store.slots.len() > slot_capacity {
         store.slots.pop_back();
     }
     store.last_action = format!("マウス選択テキストを保存しました。件数: {}", store.slots.len());
@@ -1183,22 +1422,31 @@ fn handle_range_end(app: &AppHandle) {
 
 fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut) {
     let state = app.state::<AppState>();
-    let sc = &state.shortcuts;
+    let sc = match state.shortcuts.lock() {
+        Ok(sc) => sc,
+        Err(_) => return,
+    };
 
     if shortcut == &sc.paste {
+        drop(sc);
         show_picker(app);
         return;
     }
     if shortcut == &sc.range_start {
+        drop(sc);
         handle_range_start(app);
         return;
     }
     if shortcut == &sc.range_end {
+        drop(sc);
         handle_range_end(app);
         return;
     }
 
-    let result = if shortcut == &sc.copy {
+    let is_copy = shortcut == &sc.copy;
+    drop(sc);
+
+    let result = if is_copy {
         capture_clipboard_into_store(app, &state)
     } else {
         Ok(ActionResult {
@@ -1232,11 +1480,53 @@ pub fn run() {
                 let _ = app.set_activation_policy(ActivationPolicy::Accessory);
                 let _ = app.set_dock_visibility(false);
             }
-            app.manage(initialize_state(&app_handle));
+            let state = initialize_state(&app_handle);
+
+            // Preferences から初期 PasteMode を取得（manage の前に）
+            let initial_paste_mode = state
+                .inner
+                .lock()
+                .map(|s| s.paste_mode)
+                .unwrap_or(PasteMode::Consume);
+
+            // Preferences からショートカット文字列を取得（register 用）
+            let (sc_copy, sc_paste, sc_range_start, sc_range_end) = {
+                let prefs = state.preferences.lock().unwrap();
+                (
+                    prefs.shortcut_copy.clone(),
+                    prefs.shortcut_paste.clone(),
+                    prefs.shortcut_range_start.clone(),
+                    prefs.shortcut_range_end.clone(),
+                )
+            };
+
+            app.manage(state);
             create_tray(&app_handle)?;
             position_hud(&app_handle)?;
             position_picker(&app_handle)?;
-            sync_toggle_menu_state(&app_handle, PasteMode::Consume);
+            sync_toggle_menu_state(&app_handle, initial_paste_mode);
+
+            // Preferences のショートカットでグローバルショートカットを登録
+            let gsm = app_handle.global_shortcut();
+            let shortcuts_to_register: Vec<Shortcut> = [
+                sc_copy.as_str(),
+                sc_paste.as_str(),
+                sc_range_start.as_str(),
+                sc_range_end.as_str(),
+            ]
+            .iter()
+            .filter_map(|s| s.parse::<Shortcut>().ok())
+            .collect();
+
+            for sc in shortcuts_to_register {
+                gsm.on_shortcut(sc, |app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state == ShortcutState::Released {
+                        handle_shortcut(app, shortcut);
+                    }
+                })
+                .map_err(|e| format!("ショートカットの登録に失敗しました: {e}"))?;
+            }
 
             // 前回のウィンドウ位置・サイズを復元
             restore_main_window_state(&app_handle);
@@ -1255,8 +1545,6 @@ pub fn run() {
         })
         .plugin(
             GlobalShortcutBuilder::new()
-                .with_shortcuts([COPY_SHORTCUT, PASTE_SHORTCUT, RANGE_START_SHORTCUT, RANGE_END_SHORTCUT])
-                .expect("failed to configure global shortcuts")
                 .with_handler(|app, shortcut, event| {
                     use tauri_plugin_global_shortcut::ShortcutState;
 
@@ -1277,7 +1565,9 @@ pub fn run() {
             paste_slot_by_index,
             delete_slot,
             clear_slots,
-            set_paste_mode
+            set_paste_mode,
+            get_preferences,
+            update_preference
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

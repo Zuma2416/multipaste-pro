@@ -24,8 +24,6 @@ type UpdateStatus =
   | { phase: "up-to-date" }
   | { phase: "error"; message: string };
 
-const SLOT_CAPACITY = 10;
-
 function App() {
   const [overview, setOverview] = useState<AppOverview | null>(null);
   const [slots, setSlots] = useState<PasteSlot[]>([]);
@@ -217,6 +215,7 @@ function App() {
   };
 
   const pasteMode = overview?.pasteMode ?? "consume";
+  const slotCapacity = overview?.slotCapacity ?? 10;
   const poc = overview?.poc;
 
   return (
@@ -277,12 +276,12 @@ function App() {
           <span className="slot-count-badge">
             {slots.length}
             <span className="slot-count-sep"> / </span>
-            {SLOT_CAPACITY}
+            {slotCapacity}
           </span>
         </div>
 
         <div className="slot-grid">
-          {Array.from({ length: SLOT_CAPACITY }).map((_, i) => {
+          {Array.from({ length: slotCapacity }).map((_, i) => {
             const slot = slots[i];
             return slot ? (
               <article className="slot-card is-filled" key={slot.id}>
