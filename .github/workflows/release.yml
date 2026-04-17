@@ -66,6 +66,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target aarch64-apple-darwin
 
+      - name: List bundle contents
+        run: |
+          echo "=== Bundle directory contents ==="
+          find src-tauri/target/aarch64-apple-darwin/release/bundle -type f 2>/dev/null || echo "Bundle dir not found"
+
       - name: Prepare release assets
         id: assets
         run: |
@@ -73,16 +78,32 @@ jobs:
           BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
 
           # Find built artifacts
-          APP_TAR=$(find "$BUNDLE_DIR" -name "*.app.tar.gz" | head -1)
-          APP_SIG=$(find "$BUNDLE_DIR" -name "*.app.tar.gz.sig" | head -1)
-          DMG=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)
+          APP_TAR=$(find "$BUNDLE_DIR" -name "*.app.tar.gz" 2>/dev/null | head -1)
+          APP_SIG=$(find "$BUNDLE_DIR" -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
+          DMG=$(find "$BUNDLE_DIR" -name "*.dmg" 2>/dev/null | head -1)
+
+          echo "Found APP_TAR: $APP_TAR"
+          echo "Found APP_SIG: $APP_SIG"
+          echo "Found DMG: $DMG"
+
+          # Validate required files
+          if [ -z "$APP_TAR" ]; then
+            echo "ERROR: .app.tar.gz not found. Updater bundle may not have been generated."
+            echo "Check that TAURI_SIGNING_PRIVATE_KEY is set and updater plugin is configured."
+            exit 1
+          fi
 
           echo "app_tar=$APP_TAR" >> "$GITHUB_OUTPUT"
           echo "app_sig=$APP_SIG" >> "$GITHUB_OUTPUT"
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
-          # Read signature for latest.json
-          SIGNATURE=$(cat "$APP_SIG")
+          # Read signature for latest.json (if sig exists)
+          if [ -n "$APP_SIG" ]; then
+            SIGNATURE=$(cat "$APP_SIG")
+          else
+            echo "WARNING: Signature file not found. Updater signing may have failed."
+            SIGNATURE=""
+          fi
           APP_FILENAME=$(basename "$APP_TAR")
 
           # Generate latest.json
@@ -110,13 +131,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ github.event.inputs.version }}"
+          ASSETS=()
+          [ -n "${{ steps.assets.outputs.app_tar }}" ] && ASSETS+=("${{ steps.assets.outputs.app_tar }}")
+          [ -n "${{ steps.assets.outputs.app_sig }}" ] && ASSETS+=("${{ steps.assets.outputs.app_sig }}")
+          [ -n "${{ steps.assets.outputs.dmg }}" ] && ASSETS+=("${{ steps.assets.outputs.dmg }}")
+          ASSETS+=("latest.json")
+
           gh release create "v$VERSION" \
             --title "MultiPaste Pro v$VERSION" \
             --notes "${{ github.event.inputs.release_notes }}" \
-            "${{ steps.assets.outputs.app_tar }}" \
-            "${{ steps.assets.outputs.app_sig }}" \
-            "${{ steps.assets.outputs.dmg }}" \
-            "latest.json"
+            "${ASSETS[@]}"
 
       - name: Commit updated manifests
         uses: stefanzweifel/git-auto-commit-action@v5
