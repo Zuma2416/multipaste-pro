@@ -1,0 +1,87 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+.hud-root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transform: translateY(-6px) scale(0.96);
+  transition:
+    opacity var(--fade-ms, 250ms) ease,
+    transform var(--fade-ms, 250ms) ease;
+  pointer-events: none;
+}
+
+.hud-root.is-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.hud-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  height: 52px;
+  border-radius: 999px;
+  background: rgba(20, 16, 12, 0.82);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.36),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+  max-width: 420px;
+}
+
+.hud-pill.is-error {
+  background: rgba(80, 20, 16, 0.86);
+  border-color: rgba(255, 100, 80, 0.2);
+}
+
+.hud-icon {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.hud-message {
+  font-family: "Avenir Next", "Hiragino Sans", "Yu Gothic", sans-serif;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+.hud-badge {
+  flex-shrink: 0;
+  font-family: "Avenir Next", "Hiragino Sans", "Yu Gothic", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.05em;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
