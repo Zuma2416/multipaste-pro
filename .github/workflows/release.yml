@@ -77,6 +77,57 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target aarch64-apple-darwin
 
+      - name: Import code signing certificate
+        env:
+          CODESIGN_CERT_BASE64: ${{ secrets.CODESIGN_CERT_BASE64 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CODESIGN_CERT_BASE64" ]; then
+            echo "WARNING: CODESIGN_CERT_BASE64 not set, skipping code signing."
+            echo "signed=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # 一時キーチェーン作成
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASS="ci-keychain-$(date +%s)"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # 証明書デコード・インポート
+          echo "$CODESIGN_CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # 検索リストに追加
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          echo "signed=true" >> "$GITHUB_ENV"
+          echo "Code signing certificate imported."
+
+      - name: Sign app bundle
+        if: env.signed == 'true'
+        run: |
+          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/MultiPaste Pro.app"
+          codesign --force --deep --sign "MultiPaste Pro Dev" "$APP_PATH"
+          echo "App signed with MultiPaste Pro Dev certificate."
+
+      - name: Rebuild DMG with signed app
+        if: env.signed == 'true'
+        run: |
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          DMG_PATH=$(find "$BUNDLE_DIR/dmg" -name "*.dmg" | head -1)
+          APP_PATH="$BUNDLE_DIR/macos/MultiPaste Pro.app"
+
+          if [ -n "$DMG_PATH" ] && [ -d "$APP_PATH" ]; then
+            # 既存DMGを削除して再作成
+            rm -f "$DMG_PATH"
+            DMG_NAME=$(basename "$DMG_PATH")
+            hdiutil create -volname "MultiPaste Pro" -srcfolder "$APP_PATH" -ov -format UDZO "$BUNDLE_DIR/dmg/$DMG_NAME"
+            echo "DMG rebuilt with signed app."
+          fi
+
       - name: List bundle contents
         run: |
           echo "=== Bundle directory contents ==="
