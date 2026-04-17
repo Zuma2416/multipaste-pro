@@ -60,11 +60,22 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 
+      - name: Verify signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "ERROR: TAURI_SIGNING_PRIVATE_KEY secret is not set."
+            echo "Go to Settings > Secrets > Actions and add the signing private key."
+            exit 1
+          fi
+          echo "Signing key is set (length: ${#TAURI_SIGNING_PRIVATE_KEY} chars)"
+
       - name: Build (macOS aarch64)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri build --target aarch64-apple-darwin
+        run: npx tauri build --target aarch64-apple-darwin --bundles app dmg updater
 
       - name: List bundle contents
         run: |
