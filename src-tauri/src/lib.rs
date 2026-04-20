@@ -81,7 +81,7 @@ impl Default for Preferences {
             shortcut_range_start: DEFAULT_RANGE_START_SHORTCUT.to_string(),
             shortcut_range_end: DEFAULT_RANGE_END_SHORTCUT.to_string(),
             slot_capacity: DEFAULT_SLOT_CAPACITY,
-            default_paste_mode: "consume".to_string(),
+            default_paste_mode: "keep".to_string(),
             sound_enabled: true,
         }
     }
@@ -344,6 +344,17 @@ fn set_paste_mode(app: AppHandle, state: tauri::State<'_, AppState>, mode: Strin
         message: store.last_action.clone(),
         slot_count: store.slots.len(),
     };
+    drop(store);
+
+    // デフォルト設定にも永続化（再起動後もモードを維持）
+    let mut prefs = state
+        .preferences
+        .lock()
+        .map_err(|_| "設定の更新に失敗しました。".to_string())?;
+    prefs.default_paste_mode = mode;
+    let _ = persist_preferences(&prefs, &state.preferences_path);
+    drop(prefs);
+
     emit_slots_updated(&app, &result);
     sync_toggle_menu_state(&app, next_mode);
     Ok(result)
@@ -426,13 +437,27 @@ fn update_preference(
             if value != "consume" && value != "keep" {
                 return Err("ペーストモードは consume か keep で指定してください。".to_string());
             }
-            prefs.default_paste_mode = value;
+            prefs.default_paste_mode = value.clone();
             persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
+            // ランタイムのペーストモードも即座に反映
+            let next_mode = match value.as_str() {
+                "keep" => PasteMode::Keep,
+                _ => PasteMode::Consume,
+            };
+            let mut store = state
+                .inner
+                .lock()
+                .map_err(|_| "モード更新に失敗しました。".to_string())?;
+            store.paste_mode = next_mode;
+            drop(store);
+            sync_toggle_menu_state(&app, next_mode);
         }
         "soundEnabled" => {
             let enabled: bool = value.parse().map_err(|_| "効果音設定は true/false で指定してください。".to_string())?;
             prefs.sound_enabled = enabled;
             persist_preferences(&prefs, &state.preferences_path)?;
+            drop(prefs);
         }
         _ => {
             return Err(format!("不明な設定キーです: {key}"));
