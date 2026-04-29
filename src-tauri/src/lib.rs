@@ -148,8 +148,6 @@ struct SlotStore {
     paste_mode: PasteMode,
     /// 範囲選択の開始点
     range_select_start: Option<RangeStart>,
-    /// ピッカー表示直前のフロントモストアプリ（ペースト後にフォーカスを戻すため）
-    previous_app: Option<String>,
 }
 
 struct ParsedShortcuts {
@@ -244,17 +242,8 @@ fn paste_slot_by_index(app: AppHandle, state: tauri::State<'_, AppState>, index:
         .set_text(slot.content.clone())
         .map_err(|e| format!("クリップボードへの書き込みに失敗しました: {e}"))?;
 
-    let prev_app = state.inner.lock().ok().and_then(|s| s.previous_app.clone());
-
     if let Some(picker) = app.get_webview_window("picker") {
         let _ = picker.hide();
-    }
-
-    if let Some(ref name) = prev_app {
-        activate_app(name);
-        if let Ok(mut store) = state.inner.lock() {
-            store.previous_app = None;
-        }
     }
 
     let result = ActionResult {
@@ -724,13 +713,6 @@ fn play_sound(app: &AppHandle, name: &'static str) {
 fn show_picker(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    // ピッカーがフォーカスを奪う前に、現在のフロントモストアプリを記録する
-    if let Some(prev) = get_frontmost_app_name() {
-        if let Ok(mut store) = state.inner.lock() {
-            store.previous_app = Some(prev);
-        }
-    }
-
     let slots: Vec<PasteSlot> = match state.inner.lock() {
         Ok(store) => {
             if store.slots.is_empty() {
@@ -754,27 +736,6 @@ fn show_picker(app: &AppHandle) {
         let _ = picker.show();
         let _ = picker.set_focus();
     }
-}
-
-fn get_frontmost_app_name() -> Option<String> {
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(r#"tell application "System Events" to name of first application process whose frontmost is true"#)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (!name.is_empty()).then_some(name)
-    } else {
-        None
-    }
-}
-
-fn activate_app(name: &str) {
-    let _ = Command::new("osascript")
-        .arg("-e")
-        .arg(format!(r#"tell application "{name}" to activate"#))
-        .output();
 }
 
 fn show_hud(app: &AppHandle) {
@@ -988,7 +949,6 @@ fn initialize_state(app: &AppHandle) -> AppState {
             storage_path,
             paste_mode: initial_paste_mode,
             range_select_start: None,
-            previous_app: None,
         }),
         shortcuts: Mutex::new(shortcuts),
         preferences: Mutex::new(prefs),
