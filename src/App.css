@@ -375,6 +375,92 @@ button {
   flex: 1;
 }
 
+/* ── Slot edit ─────────────────────────────────────────── */
+.slot-edit-btn {
+  position: absolute;
+  top: 6px;
+  right: 26px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(77, 54, 31, 0.1);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
+  cursor: pointer;
+}
+
+.slot-card.is-filled:hover .slot-edit-btn {
+  opacity: 1;
+}
+
+.slot-edit-btn:hover {
+  background: rgba(77, 54, 31, 0.2) !important;
+  color: var(--text-primary);
+}
+
+.slot-card.is-editing {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.slot-edit-textarea {
+  width: 100%;
+  flex: 1;
+  min-height: 52px;
+  resize: none;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  outline: none;
+  padding: 0;
+  word-break: break-all;
+}
+
+.slot-edit-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.slot-edit-cancel-btn {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  background: rgba(77, 54, 31, 0.08);
+  color: var(--text-muted);
+  transition: background 120ms ease;
+}
+
+.slot-edit-cancel-btn:hover {
+  background: rgba(77, 54, 31, 0.15);
+}
+
+.slot-edit-save-btn {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  background: var(--accent-green);
+  color: #fffaf4;
+  transition: opacity 120ms ease;
+}
+
+.slot-edit-save-btn:hover {
+  opacity: 0.85;
+}
+
 /* ── Footer ────────────────────────────────────────────── */
 .app-footer {
   display: flex;

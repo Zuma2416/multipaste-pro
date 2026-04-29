@@ -28,6 +28,7 @@ function App() {
   const [overview, setOverview] = useState<AppOverview | null>(null);
   const [slots, setSlots] = useState<PasteSlot[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
+  const [editing, setEditing] = useState<{ index: number; text: string } | null>(null);
   const [notificationGranted, setNotificationGranted] = useState<boolean | null>(null);
   const [toast, setToast] = useState<ToastState>({ visible: false, message: "", ok: true });
   const toastTimerRef = useRef<number | null>(null);
@@ -122,6 +123,20 @@ function App() {
       await refreshState();
     } catch (error) {
       const message = error instanceof Error ? error.message : "削除に失敗しました。";
+      setErrorMessage(message);
+      showToast(message, false);
+    }
+  };
+
+  const saveEdit = async (index: number, text: string) => {
+    try {
+      const result = await invoke<ActionResult>("update_slot", { index, content: text });
+      showToast(result.message, result.ok);
+      setErrorMessage("");
+      setEditing(null);
+      await refreshState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "更新に失敗しました。";
       setErrorMessage(message);
       showToast(message, false);
     }
@@ -234,7 +249,6 @@ function App() {
           <div className="poc-indicators">
             <PocDot label="クリップボード" active={poc?.clipboardRead ?? false} />
             <PocDot label="キー監視" active={poc?.globalKeyListening ?? false} />
-            <PocDot label="ペースト送信" active={poc?.pasteSimulation ?? false} />
           </div>
         </div>
         <button
@@ -265,7 +279,7 @@ function App() {
           disabled={slots.length === 0}
         >
           <span className="shortcut-badge">⌘ ⌥ V</span>
-          <span className="action-label">次のスロットをペースト</span>
+          <span className="action-label">次のスロットをコピー</span>
         </button>
       </section>
 
@@ -283,21 +297,57 @@ function App() {
         <div className="slot-grid">
           {Array.from({ length: slotCapacity }).map((_, i) => {
             const slot = slots[i];
+            const isEditing = editing?.index === i;
             return slot ? (
-              <article className="slot-card is-filled" key={slot.id}>
+              <article className={`slot-card is-filled${isEditing ? " is-editing" : ""}`} key={slot.id}>
                 <div className="slot-meta">
                   <span className="slot-index">{String(i + 1).padStart(2, "0")}</span>
                   <span className="slot-source">{formatSource(slot.source)}</span>
                 </div>
-                <p className="slot-content">{slot.content}</p>
-                <button
-                  type="button"
-                  className="slot-delete-btn"
-                  onClick={() => void deleteSlot(i)}
-                  title="このスロットを削除"
-                >
-                  ×
-                </button>
+                {isEditing ? (
+                  <>
+                    <textarea
+                      className="slot-edit-textarea"
+                      value={editing.text}
+                      onChange={(e) => setEditing({ index: i, text: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") { setEditing(null); }
+                        if (e.key === "Enter" && e.metaKey) { void saveEdit(i, editing.text); }
+                      }}
+                      autoFocus
+                    />
+                    <div className="slot-edit-actions">
+                      <button type="button" className="slot-edit-cancel-btn" onClick={() => setEditing(null)}>
+                        ✕
+                      </button>
+                      <button type="button" className="slot-edit-save-btn" onClick={() => void saveEdit(i, editing.text)}>
+                        保存
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="slot-content">{slot.content}</p>
+                )}
+                {!isEditing && (
+                  <>
+                    <button
+                      type="button"
+                      className="slot-edit-btn"
+                      onClick={() => setEditing({ index: i, text: slot.content })}
+                      title="このスロットを編集"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      type="button"
+                      className="slot-delete-btn"
+                      onClick={() => void deleteSlot(i)}
+                      title="このスロットを削除"
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
               </article>
             ) : (
               <div className="slot-card is-empty" key={`empty-${i}`}>

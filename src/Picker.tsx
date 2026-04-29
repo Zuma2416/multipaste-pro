@@ -92,7 +92,7 @@ export default function Picker() {
     <div className={`picker-root ${visible ? "is-visible" : ""}`}>
       <div className="picker-panel" role="dialog" aria-modal="true">
         <div className="picker-header">
-          <span className="picker-title">ペーストするスロットを選択</span>
+          <span className="picker-title">コピーするスロットを選択</span>
           <span className="picker-hint">↑↓ / 数字キー / Enter</span>
         </div>
 

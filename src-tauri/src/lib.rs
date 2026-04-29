@@ -16,7 +16,7 @@ use enigo::{
     Enigo, Key, Keyboard, Mouse, Settings,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
+use tauri::{ActivationPolicy, AppHandle, Emitter, Manager, Wry};
 use tauri::menu::{CheckMenuItem, MenuBuilder, MenuEvent, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, GlobalShortcutExt, Shortcut};
@@ -108,7 +108,6 @@ struct StoredSlots {
 struct PocStatus {
     clipboard_read: bool,
     global_key_listening: bool,
-    paste_simulation: bool,
 }
 
 #[derive(Serialize)]
@@ -147,10 +146,10 @@ struct SlotStore {
     last_action: String,
     storage_path: PathBuf,
     paste_mode: PasteMode,
-    /// ピッカーを開く直前にフォーカスを持っていたアプリ名
-    pre_picker_app: Option<String>,
     /// 範囲選択の開始点
     range_select_start: Option<RangeStart>,
+    /// ピッカー表示直前のフロントモストアプリ（ペースト後にフォーカスを戻すため）
+    previous_app: Option<String>,
 }
 
 struct ParsedShortcuts {
@@ -166,6 +165,8 @@ struct AppState {
     preferences: Mutex<Preferences>,
     preferences_path: PathBuf,
 }
+
+struct ToggleMenuItemState(CheckMenuItem<Wry>);
 
 #[tauri::command]
 fn get_app_overview(state: tauri::State<'_, AppState>) -> Result<AppOverview, String> {
@@ -190,7 +191,6 @@ fn get_app_overview(state: tauri::State<'_, AppState>) -> Result<AppOverview, St
         poc: PocStatus {
             clipboard_read: true,
             global_key_listening: true,
-            paste_simulation: true,
         },
     })
 }
@@ -217,8 +217,7 @@ fn paste_next_slot_now(app: AppHandle, state: tauri::State<'_, AppState>) -> Res
 
 #[tauri::command]
 fn paste_slot_by_index(app: AppHandle, state: tauri::State<'_, AppState>, index: usize) -> Result<ActionResult, String> {
-    // スロット取得・状態更新（ロックは早めに解放）
-    let (slot, count, pre_picker_app) = {
+    let (slot, count) = {
         let mut store = state
             .inner
             .lock()
@@ -233,48 +232,67 @@ fn paste_slot_by_index(app: AppHandle, state: tauri::State<'_, AppState>, index:
         if matches!(store.paste_mode, PasteMode::Consume) {
             store.slots.remove(index);
         }
-        store.last_action = format!("スロット「{}」をペーストしました。", slot.title);
+        store.last_action = format!("スロット「{}」をクリップボードにコピーしました。", slot.title);
         persist_slots(&store)?;
         let count = store.slots.len();
-        let pre_picker_app = store.pre_picker_app.take();
-        (slot, count, pre_picker_app)
+        (slot, count)
     };
 
-    // クリップボードへの書き込みはここで完了させる
     let mut clipboard =
         Clipboard::new().map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?;
     clipboard
         .set_text(slot.content.clone())
         .map_err(|e| format!("クリップボードへの書き込みに失敗しました: {e}"))?;
 
-    // ピッカーを隠してから元アプリをアクティブにしてペースト
-    let message = format!("「{}」をペーストしました。", slot.title);
-    let app_clone = app.clone();
-    let message_clone = message.clone();
-    thread::spawn(move || {
-        if let Some(picker) = app_clone.get_webview_window("picker") {
-            let _ = picker.hide();
+    let prev_app = state.inner.lock().ok().and_then(|s| s.previous_app.clone());
+
+    if let Some(picker) = app.get_webview_window("picker") {
+        let _ = picker.hide();
+    }
+
+    if let Some(ref name) = prev_app {
+        activate_app(name);
+        if let Ok(mut store) = state.inner.lock() {
+            store.previous_app = None;
         }
+    }
 
-        let paste_result = if let Some(ref app_name) = pre_picker_app {
-            // 元アプリを明示的にアクティブにしてから Cmd+V を送る
-            activate_and_paste(app_name)
-        } else {
-            // フォールバック: 少し待ってから enigo で送る
-            sleep(Duration::from_millis(200));
-            send_cmd_v()
-        };
+    let result = ActionResult {
+        ok: true,
+        message: format!("「{}」をクリップボードにコピーしました。", slot.title),
+        slot_count: count,
+    };
+    emit_slots_updated(&app, &result);
+    Ok(result)
+}
 
-        if let Err(e) = paste_result {
-            let payload = ActionResult { ok: false, message: e, slot_count: count };
-            emit_slots_updated(&app_clone, &payload);
-            return;
-        }
-        let payload = ActionResult { ok: true, message: message_clone, slot_count: count };
-        emit_slots_updated(&app_clone, &payload);
-    });
+#[tauri::command]
+fn update_slot(state: tauri::State<'_, AppState>, index: usize, content: String) -> Result<ActionResult, String> {
+    let mut store = state
+        .inner
+        .lock()
+        .map_err(|_| "スロット状態の更新に失敗しました。".to_string())?;
 
-    Ok(ActionResult { ok: true, message, slot_count: count })
+    let slot = store
+        .slots
+        .get_mut(index)
+        .ok_or_else(|| format!("スロット {} が見つかりません。", index + 1))?;
+
+    let normalized = normalize_whitespace(&content);
+    if normalized.is_empty() {
+        return Err("内容を空にすることはできません。".to_string());
+    }
+    slot.content = normalized.clone();
+    slot.title = build_slot_title(&normalized);
+
+    store.last_action = format!("スロット {} を編集しました。", index + 1);
+    persist_slots(&store)?;
+
+    Ok(ActionResult {
+        ok: true,
+        message: store.last_action.clone(),
+        slot_count: store.slots.len(),
+    })
 }
 
 #[tauri::command]
@@ -639,14 +657,14 @@ fn paste_next_slot(
             .map_err(|_| "スロット状態の更新に失敗しました。".to_string())?;
 
         let Some(slot) = store.slots.front().cloned() else {
-            return Err("ペースト対象のスロットがありません。".to_string());
+            return Err("コピー対象のスロットがありません。".to_string());
         };
 
         if matches!(store.paste_mode, PasteMode::Consume) {
             store.slots.pop_front();
         }
         store.last_action = format!(
-            "スロット「{}」を {} モードでペーストしました。",
+            "スロット「{}」を {} モードでコピーしました。",
             slot.title,
             store.paste_mode.as_str()
         );
@@ -659,13 +677,11 @@ fn paste_next_slot(
         Clipboard::new().map_err(|error| format!("クリップボードの初期化に失敗しました: {error}"))?;
     clipboard
         .set_text(slot.content.clone())
-        .map_err(|error| format!("クリップボードへの書き戻しに失敗しました: {error}"))?;
-
-    send_cmd_v().map_err(|error| format!("ペースト送信に失敗しました: {error}"))?;
+        .map_err(|error| format!("クリップボードへの書き込みに失敗しました: {error}"))?;
 
     let result = ActionResult {
         ok: true,
-        message: format!("「{}」をペーストしました。", slot.title),
+        message: format!("「{}」をクリップボードにコピーしました。", slot.title),
         slot_count: count,
     };
     emit_slots_updated(app, &result);
@@ -688,10 +704,6 @@ fn send_cmd_key(key: char) -> Result<(), String> {
     Ok(())
 }
 
-fn send_cmd_v() -> Result<(), String> {
-    send_cmd_key('v')
-}
-
 fn send_cmd_c() -> Result<(), String> {
     send_cmd_key('c')
 }
@@ -709,63 +721,28 @@ fn play_sound(app: &AppHandle, name: &'static str) {
         .spawn();
 }
 
-/// ピッカーを開く直前にフォーカスを持っているアプリ名を取得する
-fn get_frontmost_app_name() -> Option<String> {
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(r#"tell application "System Events" to get name of first application process whose frontmost is true"#)
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if name.is_empty() { None } else { Some(name) }
-    } else {
-        None
-    }
-}
-
-/// 指定アプリをアクティブにしてから Cmd+V を送信する
-fn activate_and_paste(app_name: &str) -> Result<(), String> {
-    let safe_name = app_name.replace('"', "\\\"");
-    let script = format!(
-        r#"tell application "{safe_name}" to activate
-delay 0.15
-tell application "System Events"
-    keystroke "v" using command down
-end tell"#
-    );
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("AppleScript の実行に失敗しました: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("フォーカス復元またはペーストに失敗しました: {stderr}"));
-    }
-    Ok(())
-}
-
 fn show_picker(app: &AppHandle) {
     let state = app.state::<AppState>();
 
+    // ピッカーがフォーカスを奪う前に、現在のフロントモストアプリを記録する
+    if let Some(prev) = get_frontmost_app_name() {
+        if let Ok(mut store) = state.inner.lock() {
+            store.previous_app = Some(prev);
+        }
+    }
+
     let slots: Vec<PasteSlot> = match state.inner.lock() {
-        Ok(mut store) => {
+        Ok(store) => {
             if store.slots.is_empty() {
                 drop(store);
                 let payload = ActionResult {
                     ok: false,
-                    message: "ペースト対象のスロットがありません。".to_string(),
+                    message: "コピー対象のスロットがありません。".to_string(),
                     slot_count: 0,
                 };
                 emit_slots_updated(app, &payload);
                 return;
             }
-            // ピッカーを表示する前に現在フォーカスしているアプリを記憶する
-            store.pre_picker_app = get_frontmost_app_name();
             store.slots.iter().cloned().collect()
         }
         Err(_) => return,
@@ -777,6 +754,27 @@ fn show_picker(app: &AppHandle) {
         let _ = picker.show();
         let _ = picker.set_focus();
     }
+}
+
+fn get_frontmost_app_name() -> Option<String> {
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(r#"tell application "System Events" to name of first application process whose frontmost is true"#)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!name.is_empty()).then_some(name)
+    } else {
+        None
+    }
+}
+
+fn activate_app(name: &str) {
+    let _ = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(r#"tell application "{name}" to activate"#))
+        .output();
 }
 
 fn show_hud(app: &AppHandle) {
@@ -839,10 +837,10 @@ fn build_slot_title(content: &str) -> String {
     first_line.chars().take(18).collect()
 }
 
-fn current_timestamp() -> u64 {
+fn current_timestamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_millis())
         .unwrap_or_default()
 }
 
@@ -989,8 +987,8 @@ fn initialize_state(app: &AppHandle) -> AppState {
             last_action: "待機中".to_string(),
             storage_path,
             paste_mode: initial_paste_mode,
-            pre_picker_app: None,
             range_select_start: None,
+            previous_app: None,
         }),
         shortcuts: Mutex::new(shortcuts),
         preferences: Mutex::new(prefs),
@@ -999,6 +997,11 @@ fn initialize_state(app: &AppHandle) -> AppState {
 }
 
 fn create_tray(app: &AppHandle) -> Result<(), String> {
+    let initial_keep = app
+        .try_state::<AppState>()
+        .and_then(|s| s.inner.lock().ok().map(|store| matches!(store.paste_mode, PasteMode::Keep)))
+        .unwrap_or(false);
+
     let show_item = MenuItemBuilder::with_id(MENU_SHOW_APP, "ダッシュボードを開く")
         .build(app)
         .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
@@ -1009,7 +1012,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
         .accelerator("CmdOrCtrl+Alt+C")
         .build(app)
         .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
-    let paste_item = MenuItemBuilder::with_id(MENU_PASTE, "先頭スロットを貼り付け")
+    let paste_item = MenuItemBuilder::with_id(MENU_PASTE, "先頭スロットをコピー")
         .accelerator("CmdOrCtrl+Alt+V")
         .build(app)
         .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
@@ -1018,7 +1021,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
         MENU_TOGGLE_MODE,
         "保持モード",
         true,
-        false,
+        initial_keep,
         None::<&str>,
     )
     .map_err(|error| format!("トレイメニューの作成に失敗しました: {error}"))?;
@@ -1069,6 +1072,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
         .build(app)
         .map_err(|error| format!("トレイアイコンの作成に失敗しました: {error}"))?;
 
+    app.manage(ToggleMenuItemState(toggle_item));
     Ok(())
 }
 
@@ -1152,12 +1156,8 @@ fn toggle_main_window(app: &AppHandle) -> Result<(), String> {
 }
 
 fn sync_toggle_menu_state(app: &AppHandle, mode: PasteMode) {
-    if let Some(menu) = app.menu() {
-        if let Some(menu_item) = menu.get(MENU_TOGGLE_MODE) {
-            if let Some(check_item) = menu_item.as_check_menuitem() {
-            let _ = check_item.set_checked(matches!(mode, PasteMode::Keep));
-            }
-        }
+    if let Some(state) = app.try_state::<ToggleMenuItemState>() {
+        let _ = state.0.set_checked(matches!(mode, PasteMode::Keep));
     }
 }
 
@@ -1568,17 +1568,7 @@ pub fn run() {
 
             Ok(())
         })
-        .plugin(
-            GlobalShortcutBuilder::new()
-                .with_handler(|app, shortcut, event| {
-                    use tauri_plugin_global_shortcut::ShortcutState;
-
-                    if event.state == ShortcutState::Released {
-                        handle_shortcut(app, shortcut);
-                    }
-                })
-                .build(),
-        )
+        .plugin(GlobalShortcutBuilder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -1588,6 +1578,7 @@ pub fn run() {
             capture_clipboard_now,
             paste_next_slot_now,
             paste_slot_by_index,
+            update_slot,
             delete_slot,
             clear_slots,
             set_paste_mode,

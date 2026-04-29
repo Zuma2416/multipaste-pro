@@ -12,7 +12,6 @@ export interface PasteSlot {
 export interface PocStatus {
   clipboardRead: boolean;
   globalKeyListening: boolean;
-  pasteSimulation: boolean;
 }
 
 export interface AppOverview {
