@@ -1091,6 +1091,9 @@ fn show_main_window(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| format!("ウィンドウ表示に失敗しました: {error}"))?;
     // macOS は hide() → show() でウィンドウ位置がリセットされる場合があるため再適用する
     restore_main_window_state(app);
+    // Accessory ポリシーアプリは NSApp レベルのアクティベートが必要
+    #[cfg(target_os = "macos")]
+    app.show().ok();
     window
         .set_focus()
         .map_err(|error| format!("ウィンドウのフォーカスに失敗しました: {error}"))?;
